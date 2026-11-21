@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>מתכנן ביקורי בית</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#6b7280; --acc:#2563eb; --line:#e5e7eb; --warn:#b45309; --ok:#15803d; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:640px; margin:0 auto; padding:14px; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin-bottom:12px; }
+  .card h2 { font-size:15px; margin:0 0 8px; color:var(--muted); font-weight:600; }
+  label { font-size:13px; color:var(--muted); display:block; margin-bottom:3px; }
+  input { font:inherit; font-size:16px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; width:100%; background:#fff; }
+  .row { display:flex; gap:8px; align-items:flex-end; margin-bottom:8px; }
+  .row > .grow { flex:1; }
+  .row > .tm { width:110px; }
+  .seg { display:flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-bottom:8px; }
+  .seg button { flex:1; border-radius:0; background:#fff; color:var(--ink); padding:10px 4px; font-size:15px; min-height:44px; line-height:1.15; }
+  .seg button + button { border-inline-start:1px solid var(--line); }
+  .seg button small { display:block; font-size:12px; color:var(--muted); }
+  .seg button[aria-pressed="true"] { background:var(--acc); color:#fff; font-weight:600; }
+  .seg button[aria-pressed="true"] small { color:#dbeafe; }
+  .visit { border:1px solid var(--line); border-radius:10px; padding:8px 8px 0; margin-bottom:8px; }
+  .win { font-size:13px; color:var(--muted); }
+  .win input { width:auto; flex:1; font-size:15px; padding:6px 8px; }
+  .wait { color:var(--warn); }
+  .bad { color:#b91c1c; }
+  button { font:inherit; font-size:15px; border:0; border-radius:8px; padding:9px 12px; cursor:pointer; }
+  .primary { background:var(--acc); color:#fff; width:100%; padding:12px; font-size:16px; font-weight:600; }
+  .ghost { background:#eef2ff; color:var(--acc); }
+  .x { background:transparent; color:var(--muted); padding:9px 6px; font-size:18px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; }
+  .settings { display:flex; gap:8px; }
+  .settings > div { flex:1; }
+  #status { font-size:14px; margin:8px 0; min-height:18px; }
+  #status.err { color:#b91c1c; }
+  #map { height:320px; border-radius:12px; border:1px solid var(--line); margin-bottom:12px; display:none; }
+  .summary { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }
+  .stat { background:#f3f4f6; border-radius:8px; padding:8px; }
+  .stat b { display:block; font-size:18px; }
+  .stat span { font-size:12px; color:var(--muted); }
+  .leave { grid-column:1 / -1; background:#ecfdf5; }
+  .leave b { color:var(--ok); font-size:22px; }
+  ol.sched { list-style:none; padding:0; margin:0; }
+  ol.sched li { border-top:1px solid var(--line); padding:9px 0; display:flex; gap:10px; align-items:center; }
+  .time { font-weight:700; width:52px; flex-shrink:0; }
+  .what { flex:1; font-size:14px; }
+  .what small { display:block; color:var(--muted); }
+  .nav a { font-size:13px; text-decoration:none; background:#eef2ff; color:var(--acc); padding:5px 8px; border-radius:6px; white-space:nowrap; }
+  .links { display:flex; gap:8px; margin-top:10px; }
+  .links a { flex:1; text-align:center; text-decoration:none; background:var(--acc); color:#fff; padding:10px; border-radius:8px; font-weight:600; }
+  .warn { color:var(--warn); font-size:13px; margin-top:6px; }
+  .pin { background:#eef2ff; color:var(--acc); padding:9px 10px; }
+  .pin.set { background:var(--acc); color:#fff; }
+  #picker { position:fixed; inset:0; background:#0008; z-index:2000; display:flex; align-items:center; justify-content:center; padding:12px; }
+  #picker[hidden] { display:none; }
+  #picker .box { background:#fff; border-radius:12px; width:100%; max-width:640px; padding:10px; }
+  #pmap { height:60vh; border-radius:8px; margin:8px 0; }
+  #picker .btns { display:flex; gap:8px; }
+  #picker .btns button { flex:1; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🚗 מתכנן ביקורי בית</h1>
+
+  <div class="card">
+    <h2>נקודת יציאה (לא חובה)</h2>
+    <div class="row">
+      <div class="grow"><input id="start" placeholder="למשל: הבית, או ריק"></div>
+      <button class="pin" title="סימון במפה">📌</button>
+      <button class="ghost" id="gps" title="המיקום הנוכחי">📍</button>
+    </div>
+    <div class="row">
+      <div class="grow"><label>לא לצאת לפני (לא חובה)</label><input id="earliest" type="time"></div>
+    </div>
+    <div class="hint">אם אין יעד עם שעת הגעה, התכנון מתחיל מהשעה הזו (או מעכשיו).</div>
+  </div>
+
+  <div class="card">
+    <h2>ביקורים</h2>
+    <div id="visits"></div>
+    <button class="ghost" id="add">+ הוספת ביקור</button>
+    <div class="hint">רק כתובת: עיר + רחוב + מספר, בלי שמות מטופלים. אפשר גם קואורדינטות "31.77,35.21".<br>
+      📌 = סימון המיקום המדויק בלחיצה על המפה (נשמר לכתובת הזו).<br>
+      "זמין מ / עד" אינם חובה: הביקור כולו ייכנס בטווח הזה.</div>
+  </div>
+
+  <div class="card">
+    <h2>יעד סופי (המכון)</h2>
+    <div class="row">
+      <div class="grow"><label>כתובת</label><input id="end" placeholder="ריק = אין יעד סופי"></div>
+      <button class="pin" title="סימון במפה">📌</button>
+      <div class="tm"><label>להגיע עד</label><input id="arrive" type="time"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>הגדרות</h2>
+    <div class="settings">
+      <div><label>תוספת לנסיעות (%)</label><input id="bufPct" type="number" value="20" min="0"></div>
+      <div><label>מרווח לפני היעד (דק׳)</label><input id="bufMin" type="number" value="10" min="0"></div>
+    </div>
+    <div class="hint">זמני הנסיעה מ-OpenStreetMap לא כוללים פקקים, ולכן כדאי להשאיר תוספת אחוזים.</div>
+  </div>
+
+  <button class="primary" id="go">חשב מסלול אופטימלי</button>
+  <div id="status"></div>
+
+  <div id="map"></div>
+  <div id="result"></div>
+</main>
+
+<div id="picker" hidden>
+  <div class="box">
+    <div id="ptitle" style="font-size:14px"></div>
+    <div id="pmap"></div>
+    <div class="btns">
+      <button class="primary" id="pok" disabled>שמור מיקום</button>
+      <button class="ghost" id="pclear">ביטול סימון</button>
+      <button class="ghost" id="pcancel">סגור</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+const toMin = s => { if (!s) return null; const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+const hhmm = m => { m = Math.round(m); const d = ((m % 1440) + 1440) % 1440; return String(Math.floor(d / 60)).padStart(2, '0') + ':' + String(d % 60).padStart(2, '0'); };
+
+// ---------- Visit types (single place to change labels / durations) ----------
+const VISIT_TYPES = {
+  regular: { label: 'רגיל',  min: 30 },
+  first:   { label: 'ראשון', min: 40 },
+  double:  { label: 'כפול',  min: 60 },
+};
+const DEFAULT_TYPE = 'regular';
+const typeOf = k => VISIT_TYPES[k] ? k : DEFAULT_TYPE;
+
+// ---------- UI ----------
+function setType(box, k) {
+  box.dataset.type = typeOf(k);
+  box.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.type === box.dataset.type)));
+}
+function addVisit(v = {}) {
+  const box = document.createElement('div');
+  box.className = 'visit';
+  box.innerHTML = `<div class="row"><div class="grow"><input class="addr" placeholder="כתובת ביקור"></div>
+      <button class="pin" title="סימון במפה">📌</button>
+      <button class="x" title="הסר">✕</button></div>
+    <div class="seg" role="group" aria-label="סוג ביקור">${Object.entries(VISIT_TYPES).map(([k, t]) =>
+      `<button type="button" data-type="${k}" aria-pressed="false">${t.label}<small>${t.min} דק׳</small></button>`).join('')}</div>
+    <div class="row win">זמין מ<input class="vfrom" type="time">עד<input class="vto" type="time"></div>`;
+  box.querySelector('.addr').value = v.q || '';
+  setType(box, v.type);
+  box.querySelectorAll('.seg button').forEach(b => b.onclick = () => { setType(box, b.dataset.type); saveForm(); });
+  box.querySelector('.vfrom').value = v.from || '';
+  box.querySelector('.vto').value = v.to || '';
+  box.querySelector('.x').onclick = () => { box.remove(); saveForm(); };
+  box.querySelectorAll('input').forEach(i => i.addEventListener('change', saveForm));
+  wirePin(box.querySelector('.addr'), box.querySelector('.pin'));
+  $('#visits').appendChild(box);
+}
+$('#add').onclick = () => { if (document.querySelectorAll('.visit').length >= 10) return setStatus('עד 10 ביקורים', true); addVisit(); };
+const readVisits = () => [...document.querySelectorAll('.visit')].map(b => ({
+  q: b.querySelector('.addr').value.trim(), type: typeOf(b.dataset.type),
+  from: b.querySelector('.vfrom').value, to: b.querySelector('.vto').value }));
+const FIELDS = ['start','earliest','end','arrive','bufPct','bufMin'];
+function saveForm() { const f = { visits: readVisits() }; FIELDS.forEach(k => f[k] = $('#'+k).value); store.set('form2', f); }
+FIELDS.forEach(k => $('#'+k).addEventListener('change', saveForm));
+(function loadForm() {
+  const f = store.get('form2', null);
+  if (f) { FIELDS.forEach(k => { if (f[k] != null) $('#'+k).value = f[k]; }); (f.visits && f.visits.length ? f.visits : [{}, {}]).forEach(addVisit); }
+  else { addVisit(); addVisit(); }
+})();
+$('#gps').onclick = () => {
+  if (!navigator.geolocation) return setStatus('אין גישה למיקום בדפדפן הזה', true);
+  setStatus('מאתר מיקום…');
+  navigator.geolocation.getCurrentPosition(
+    p => { $('#start').value = p.coords.latitude.toFixed(5) + ',' + p.coords.longitude.toFixed(5); saveForm(); setStatus(''); },
+    () => setStatus('לא הצלחתי לקבל מיקום', true), { enableHighAccuracy: true, timeout: 10000 });
+};
+function setStatus(msg, err) { const s = $('#status'); s.textContent = msg; s.className = err ? 'err' : ''; }
+
+// ---------- Geocoding (Nominatim, cached; manual pins override) ----------
+// geo cache: { "<address>": { lat, lon, exact, pinned? } } — addresses only.
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let lastNom = 0;
+const COORD_RE = /^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/;
+async function geocode(q) {
+  const m = q.trim().match(COORD_RE);
+  if (m) return { lat: +m[1], lon: +m[2], exact: true };
+  const cache = store.get('geo2', {}), key = q.trim();
+  if (cache[key]) return cache[key];
+  const wait = 1100 - (Date.now() - lastNom); if (wait > 0) await sleep(wait);
+  lastNom = Date.now();
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&addressdetails=1&countrycodes=il&accept-language=he&q=' + encodeURIComponent(key));
+  if (!r.ok) throw new Error('שגיאת איתור כתובת');
+  const j = await r.json();
+  if (!j.length) return null;
+  // "exact" = Nominatim matched a house number, or the user didn't type one.
+  const g = { lat: +j[0].lat, lon: +j[0].lon, exact: !!(j[0].address && j[0].address.house_number) || !/\d/.test(key) };
+  cache[key] = g; store.set('geo2', cache);
+  return g;
+}
+
+// ---------- Map picker ----------
+let pmap, pmarker, pickFor = null;
+function refreshPin(input, btn) {
+  const g = store.get('geo2', {})[input.value.trim()];
+  btn.classList.toggle('set', !!(g && g.pinned));
+}
+function wirePin(input, btn) {
+  btn.onclick = () => openPicker(input, btn);
+  input.addEventListener('input', () => refreshPin(input, btn));
+  refreshPin(input, btn);
+}
+async function openPicker(input, btn) {
+  const key = input.value.trim();
+  if (!key) return setStatus('קודם הקלד כתובת, ואז סמן אותה במפה', true);
+  if (COORD_RE.test(key)) return setStatus('השדה כבר מכיל קואורדינטות', true);
+  pickFor = { input, btn, key };
+  $('#ptitle').textContent = `לחץ על המפה במיקום המדויק של: ${key}`;
+  $('#picker').hidden = false;
+  if (!pmap) {
+    pmap = L.map('pmap');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(pmap);
+    pmap.on('click', ev => { setPick(ev.latlng); $('#pok').disabled = false; });
+  }
+  pmap.invalidateSize();
+  if (pmarker) { pmarker.remove(); pmarker = null; }
+  $('#pok').disabled = true;
+  pmap.setView([32.0, 34.85], 9);
+  let g = null; try { g = await geocode(key); } catch {}
+  if (g && pickFor && pickFor.key === key) { pmap.setView([g.lat, g.lon], 17); setPick({ lat: g.lat, lng: g.lon }); }
+}
+function setPick(ll) { if (pmarker) pmarker.setLatLng(ll); else pmarker = L.marker(ll).addTo(pmap); }
+const closePicker = () => { $('#picker').hidden = true; pickFor = null; };
+$('#pcancel').onclick = closePicker;
+$('#pok').onclick = () => {
+  const ll = pmarker.getLatLng(), cache = store.get('geo2', {});
+  cache[pickFor.key] = { lat: ll.lat, lon: ll.lng, exact: true, pinned: true };
+  store.set('geo2', cache); refreshPin(pickFor.input, pickFor.btn); closePicker();
+};
+$('#pclear').onclick = () => {
+  const cache = store.get('geo2', {}); delete cache[pickFor.key];
+  store.set('geo2', cache); refreshPin(pickFor.input, pickFor.btn); closePicker();
+};
+document.querySelectorAll('.card > .row .pin').forEach(b => wirePin(b.parentElement.querySelector('input'), b));
+
+// ---------- OSRM ----------
+const OSRM = 'https://router.project-osrm.org';
+const cstr = pts => pts.map(p => p.lon.toFixed(6) + ',' + p.lat.toFixed(6)).join(';');
+async function durationMatrix(pts) {
+  const r = await fetch(`${OSRM}/table/v1/driving/${cstr(pts)}?annotations=duration,distance`);
+  const j = await r.json();
+  if (j.code !== 'Ok') throw new Error('שרת הניתוב לא החזיר תשובה (' + (j.code || r.status) + ')');
+  return { dur: j.durations, dist: j.distances };
+}
+async function routeGeometry(pts) {
+  const r = await fetch(`${OSRM}/route/v1/driving/${cstr(pts)}?overview=full&geometries=geojson`);
+  const j = await r.json();
+  return j.code === 'Ok' ? j.routes[0].geometry.coordinates.map(c => [c[1], c[0]]) : null;
+}
+
+// ---------- Scheduler (pure; minutes since midnight) ----------
+// P = { M (leg minutes matrix), V (visit node ids), s, e, dur{}, from{}, to{}, bufMin }
+// Latest-start schedule for a fixed order, finishing by T. Returns null if infeasible.
+function evalOrder(P, order, T) {
+  const { M, s, e, dur, from, to, bufMin } = P;
+  let limit = T - bufMin, next = e;            // must arrive at `next` by `limit`
+  const start = {};
+  for (let k = order.length - 1; k >= 0; k--) {
+    const v = order[k];
+    let endBy = limit - (next !== null ? M[v][next] : 0);
+    if (to[v] != null) endBy = Math.min(endBy, to[v]);
+    const st = endBy - dur[v];
+    if (from[v] != null && st < from[v]) return null;
+    start[v] = st; limit = st; next = v;
+  }
+  const dep = limit - (s !== null ? M[s][order[0]] : 0);
+  let drive = 0, prev = s;
+  for (const v of order) { if (prev !== null) drive += M[prev][v]; prev = v; }
+  if (e !== null) drive += M[prev][e];
+  return { start, dep, span: T - dep, drive };
+}
+
+// Exact search: order minimizing span (= dead time + visit time) for finish deadline T; ties -> less driving.
+function bestForDeadline(P, T) {
+  const { M, V, s, dur, from, to, bufMin, e } = P;
+  const minIn = {};
+  for (const u of V) { let m = Infinity; for (const w of V) if (w !== u) m = Math.min(m, M[w][u]); if (s !== null) m = Math.min(m, M[s][u]); minIn[u] = isFinite(m) ? m : 0; }
+  const maxMinIn = Math.max(0, ...V.map(u => minIn[u]));
+  let best = null; const placed = []; const used = new Set();
+  function dfs(limit, next, remDur, remIn, drive) {
+    const rem = V.length - placed.length;
+    if (rem === 0) {
+      const dep = limit - (s !== null ? M[s][placed[0]] : 0);
+      const span = T - dep, d = drive + (s !== null ? M[s][placed[0]] : 0);
+      if (!best || span < best.span || (span === best.span && d < best.drive)) best = { span, drive: d, order: placed.slice() };
+      return;
+    }
+    const lbDep = limit - remDur - (remIn - (s === null ? maxMinIn : 0));
+    if (best && T - lbDep > best.span) return;
+    for (const v of V) {
+      if (used.has(v)) continue;
+      const leg = next !== null ? M[v][next] : 0;
+      let endBy = limit - leg;
+      if (to[v] != null) endBy = Math.min(endBy, to[v]);
+      const st = endBy - dur[v];
+      if (from[v] != null && st < from[v]) continue;
+      used.add(v); placed.unshift(v);
+      dfs(st, v, remDur - dur[v], remIn - minIn[v], drive + leg);
+      used.delete(v); placed.shift();
+    }
+  }
+  const totDur = V.reduce((a, v) => a + dur[v], 0), totIn = V.reduce((a, v) => a + minIn[v], 0);
+  dfs(T - bufMin, e, totDur, totIn, 0);
+  return best;
+}
+
+// Earliest possible finish when starting at t0 (no deadline).
+function earliestFinish(P, t0) {
+  const { M, V, s, e, dur, from, to, bufMin } = P;
+  let best = Infinity; const used = new Set();
+  const minOut = {};
+  for (const u of V) { let m = Infinity; for (const w of V) if (w !== u) m = Math.min(m, M[u][w]); if (e !== null) m = Math.min(m, M[u][e]); minOut[u] = isFinite(m) ? m : 0; }
+  const maxOut = Math.max(0, ...V.map(u => minOut[u]));
+  function dfs(t, prev, cnt, remDur, remOut) {
+    if (cnt === V.length) { const f = t + (e !== null ? M[prev][e] : 0) + bufMin; if (f < best) best = f; return; }
+    if (t + remDur + remOut - (e === null ? maxOut : 0) + bufMin >= best) return;
+    for (const v of V) {
+      if (used.has(v)) continue;
+      const arr = t + (prev !== null ? M[prev][v] : 0);
+      const st = Math.max(arr, from[v] ?? -Infinity), en = st + dur[v];
+      if (to[v] != null && en > to[v]) continue;
+      used.add(v); dfs(en, v, cnt + 1, remDur - dur[v], remOut - minOut[v]); used.delete(v);
+    }
+  }
+  dfs(t0, s, 0, V.reduce((a, v) => a + dur[v], 0), V.reduce((a, v) => a + minOut[v], 0));
+  return isFinite(best) ? best : null;
+}
+
+// ---------- Main ----------
+let map, layer;
+$('#go').onclick = async () => {
+  saveForm();
+  $('#result').innerHTML = '';
+  const bufPct = (+$('#bufPct').value || 0) / 100, bufMin = +$('#bufMin').value || 0;
+  const visits = readVisits().filter(v => v.q).map(v => ({ ...v, dur: VISIT_TYPES[v.type].min, from: toMin(v.from), to: toMin(v.to) }));
+  if (!visits.length) return setStatus('צריך לפחות ביקור אחד', true);
+  if (visits.length > 10) return setStatus('עד 10 ביקורים', true);
+  for (const v of visits) if (v.from != null && v.to != null && v.to - v.from < v.dur)
+    return setStatus(`החלון של "${v.q}" קצר ממשך ביקור ${VISIT_TYPES[v.type].label} (${v.dur} דק׳)`, true);
+  const startQ = $('#start').value.trim(), endQ = $('#end').value.trim();
+  const deadline = toMin($('#arrive').value);
+  const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
+  const earliest = toMin($('#earliest').value);
+
+  try {
+    const all = [];
+    if (startQ) all.push({ q: startQ, kind: 'start' });
+    visits.forEach(v => all.push({ ...v, kind: 'visit' }));
+    if (endQ) all.push({ q: endQ, kind: 'end' });
+    for (let i = 0; i < all.length; i++) {
+      setStatus(`מאתר כתובות… (${i + 1}/${all.length})`);
+      const g = await geocode(all[i].q);
+      if (!g) return setStatus(`לא נמצאה הכתובת: "${all[i].q}". נסה עיר + רחוב + מספר, או קואורדינטות.`, true);
+      Object.assign(all[i], g);
+    }
+    setStatus('מחשב זמני נסיעה…');
+    const { dur: D, dist: Ldist } = await durationMatrix(all);
+    const M = D.map(r => r.map(x => Math.ceil((x ?? 1e6) / 60 * (1 + bufPct))));
+    const s = startQ ? 0 : null, e = endQ ? all.length - 1 : null;
+    const V = visits.map((_, i) => i + (s !== null ? 1 : 0));
+    const P = { M, V, s, e, bufMin, dur: {}, from: {}, to: {} };
+    V.forEach(v => { P.dur[v] = all[v].dur; P.from[v] = all[v].from; P.to[v] = all[v].to; });
+
+    setStatus('מחפש את הסדר הטוב ביותר…');
+    let T = deadline, note = '';
+    if (T == null) {
+      const t0 = earliest ?? nowMin;
+      T = earliestFinish(P, t0);
+      if (T == null) return setStatus('אין סדר ביקורים שעומד בכל חלונות הזמן. נסה להרחיב חלון או לקצר ביקור.', true);
+    }
+    const best = bestForDeadline(P, T);
+    if (!best) return setStatus(`אין סדר ביקורים שמאפשר להגיע עד ${hhmm(T)} ולעמוד בכל חלונות הזמן. נסה להרחיב חלון, לקצר ביקורים או להוריד ביקור.`, true);
+    const ev = evalOrder(P, best.order, T);
+    if (earliest != null && ev.dep < earliest) note = `שים לב: כדי לעמוד בזה צריך לצאת ב-${hhmm(ev.dep)}, מוקדם מ-${hhmm(earliest)}.`;
+    const approx = all.filter(p => !p.exact).map(p => `"${p.q}"`);
+    const approxNote = approx.length ? `מיקום משוער (מספר הבית לא נמצא, נלקח מרכז הרחוב): ${approx.join(', ')}. לחץ 📌 ליד הכתובת כדי לסמן אותה במפה.` : '';
+
+    // Build forward timeline from the latest-start schedule
+    const items = []; let t = ev.dep, prev = s, waitTot = 0, distM = 0;
+    if (s !== null) items.push({ time: t, title: 'יציאה', sub: all[s].q, p: all[s] });
+    best.order.forEach((v, k) => {
+      const leg = prev !== null ? M[prev][v] : 0;
+      if (prev !== null && Ldist) distM += Ldist[prev][v];
+      const arr = t + leg, st = ev.start[v], w = st - arr;
+      waitTot += w;
+      const win = (all[v].from != null || all[v].to != null) ? ` · זמין ${all[v].from != null ? hhmm(all[v].from) : ''}–${all[v].to != null ? hhmm(all[v].to) : ''}` : '';
+      items.push({ time: st, title: `ביקור ${k + 1} · ${VISIT_TYPES[all[v].type].label} · ${all[v].dur} דק׳`, sub: `${all[v].q}${win}`, p: all[v], leg: prev !== null ? leg : null, wait: w });
+      t = st + all[v].dur; prev = v;
+    });
+    let slack = 0;
+    if (e !== null) {
+      const leg = M[prev][e]; if (Ldist) distM += Ldist[prev][e];
+      const arr = t + leg; slack = T - arr;
+      items.push({ time: arr, title: 'הגעה ליעד', sub: `${all[e].q}${deadline != null ? ` · ${slack} דק׳ לפני ${hhmm(T)}` : ''}`, p: all[e], leg });
+    }
+    const driveMin = best.drive;
+    const dead = driveMin + waitTot;
+
+    // Compare with entered order
+    const naive = evalOrder(P, V, T);
+    const cmp = naive ? (naive.span - ev.span > 0 ? `חוסך כ-${naive.span - ev.span} דק׳ לעומת הסדר שבו הוזנו הכתובות.` : '')
+                      : 'הסדר שבו הוזנו הכתובות לא היה עומד באילוצים.';
+
+    const ll = p => p.lat.toFixed(6) + ',' + p.lon.toFixed(6);
+    const pts = [...(s !== null ? [all[s]] : []), ...best.order.map(v => all[v]), ...(e !== null ? [all[e]] : [])];
+    const gUrl = 'https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=' + ll(pts[0]) + '&destination=' + ll(pts[pts.length - 1])
+      + (pts.length > 2 ? '&waypoints=' + pts.slice(1, -1).map(ll).join('%7C') : '');
+    const waze = p => `https://waze.com/ul?ll=${ll(p)}&navigate=yes`;
+
+    $('#result').innerHTML = `
+      <div class="card">
+        <div class="summary">
+          <div class="stat leave"><b>${hhmm(items[0].time)}</b><span>${s !== null ? 'לצאת בשעה' : 'להתחיל בביקור הראשון בשעה'}${deadline != null && e !== null ? ' (כדי להגיע עד ' + hhmm(deadline) + ')' : ''}</span></div>
+          <div class="stat"><b>${dead} דק׳</b><span>זמן מת: נסיעה ${driveMin}${waitTot ? ' + המתנה ' + waitTot : ''}</span></div>
+          <div class="stat"><b>${(distM / 1000).toFixed(1)} ק״מ</b><span>זמני נסיעה כוללים תוספת ${Math.round(bufPct * 100)}%</span></div>
+        </div>
+        ${cmp ? `<div class="hint">${cmp}</div>` : ''}
+        ${note ? `<div class="warn">${note}</div>` : ''}
+        ${approxNote ? `<div class="warn">${approxNote}</div>` : ''}
+        <ol class="sched">${items.map(it => `
+          <li><span class="time">${hhmm(it.time)}</span>
+            <span class="what">${it.title}${it.leg != null ? ` <small>${it.leg} דק׳ נסיעה${it.wait > 0 ? ` · <span class="wait">המתנה ${it.wait} דק׳</span>` : ''}</small>` : ''}<small>${it.sub}</small></span>
+            <span class="nav"><a href="${waze(it.p)}" target="_blank" rel="noopener">Waze</a></span></li>`).join('')}
+        </ol>
+        <div class="links"><a href="${gUrl}" target="_blank" rel="noopener">כל המסלול בגוגל מפות</a></div>
+      </div>`;
+
+    $('#map').style.display = 'block';
+    if (!map) { map = L.map('map'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map); }
+    if (layer) layer.remove();
+    layer = L.layerGroup().addTo(map);
+    let vn = 0;
+    pts.forEach(p => {
+      const lbl = p.kind === 'start' ? 'S' : p.kind === 'end' ? '🏁' : String(++vn);
+      L.marker([p.lat, p.lon], { icon: L.divIcon({ className: '', html: `<div style="background:#2563eb;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:700;border:2px solid #fff;box-shadow:0 1px 3px #0005">${lbl}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] }) }).bindPopup(p.q).addTo(layer);
+    });
+    map.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lon])).pad(0.15));
+    setStatus('');
+    const geom = await routeGeometry(pts);
+    if (geom) L.polyline(geom, { color: '#2563eb', weight: 4, opacity: .8 }).addTo(layer);
+  } catch (err) {
+    setStatus('שגיאה: ' + err.message, true);
+  }
+};
+</script>
+</body>
+</html>
