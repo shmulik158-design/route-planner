@@ -260,21 +260,34 @@ document.querySelectorAll('.card > .row .pin').forEach(b => wirePin(b.parentElem
 // ---------- Traffic matrix (Google Routes via our Worker) ----------
 // URL of the Cloudflare Worker (worker/). Empty = OSRM only, no traffic.
 let TRAFFIC_API = 'https://route-planner-matrix.shmulik158.workers.dev';
-const TRAFFIC_ROUNDS = 3, TRAFFIC_TOL = 5; // re-plan up to 3 times until departure moves ≤ 5 min
-async function trafficMatrix(pts, when) {
+// Google bills every origin×destination pair, so: departures are rounded to 15-min slots, matrices are
+// cached per (points, pairs, slot), and the departure is re-planned at most twice.
+const TRAFFIC_ROUNDS = 2, TRAFFIC_SLOT = 15, TRAFFIC_CACHE_H = 12;
+// from/to: point indexes used as origins / destinations (only the pairs the scheduler can use).
+async function trafficMatrix(pts, when, from, to) {
+  const body = { points: pts.map(p => ({ lat: +p.lat.toFixed(6), lon: +p.lon.toFixed(6) })), from, to, departureTime: when.toISOString() };
+  const key = JSON.stringify(body), cache = store.get('tmx', {}), now = Date.now();
+  for (const k in cache) if (now - cache[k].at > TRAFFIC_CACHE_H * 3600e3) delete cache[k];
+  if (cache[key]) return cache[key].m;
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 20000);
   try {
-    const r = await fetch(TRAFFIC_API, { method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ points: pts.map(p => ({ lat: p.lat, lon: p.lon })), departureTime: when.toISOString() }) });
+    const r = await fetch(TRAFFIC_API, { method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json' }, body: key });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !Array.isArray(j.dur)) throw new Error(j.error || 'HTTP ' + r.status);
+    cache[key] = { at: now, m: j };
+    const keys = Object.keys(cache); keys.slice(0, Math.max(0, keys.length - 20)).forEach(k => delete cache[k]);
+    store.set('tmx', cache);
     return j;
   } finally { clearTimeout(timer); }
 }
-// Minutes-since-midnight → Date. A time already well past today means the plan is for tomorrow.
+// Minutes-since-midnight → Date on a 15-min slot. A time already well past today means the plan is for tomorrow.
 function depDate(min) {
-  const now = new Date(), d = new Date(now); d.setHours(0, 0, 0, 0); d.setMinutes(Math.round(min));
-  if (d < now) { if (now - d <= 30 * 60e3) return new Date(now.getTime() + 60e3); d.setDate(d.getDate() + 1); }
+  const now = new Date(), d = new Date(now); d.setHours(0, 0, 0, 0);
+  d.setMinutes(Math.round(min / TRAFFIC_SLOT) * TRAFFIC_SLOT);
+  if (d < now) {
+    if (now - d <= 30 * 60e3) { d.setTime(Math.ceil(now / (TRAFFIC_SLOT * 60e3)) * TRAFFIC_SLOT * 60e3); return d; }
+    d.setDate(d.getDate() + 1);
+  }
   return d;
 }
 
@@ -421,20 +434,26 @@ $('#go').onclick = async () => {
         // Departure depends on the order and the order on travel times: iterate until departure settles.
         let dep = deadline != null ? deadline - bufMin - visits.reduce((a, v) => a + v.dur, 0) - 15 * (visits.length + 1)
                                    : (earliest ?? nowMin);
+        // Origins: everything but the final destination. Destinations: everything but the start point.
+        const idx = all.map((_, i) => i), from = idx.filter(i => i !== e), to = idx.filter(i => i !== s);
         const rounds = []; let settled = false;
         for (let round = 1; round <= TRAFFIC_ROUNDS; round++) {
           setStatus(`מחשב זמני נסיעה עם תנועה צפויה… (סבב ${round})`);
-          const when = depDate(dep), mat = await trafficMatrix(all, when);
+          const when = depDate(dep), mat = await trafficMatrix(all, when, from, to);
           const r = { sol: plan(mat.dur), dist: mat.dist, when };
           rounds.push(r);
-          if (r.sol.err || Math.abs(r.sol.ev.dep - dep) <= TRAFFIC_TOL) { settled = true; break; }
+          if (r.sol.err) { settled = true; break; }
+          // Same slot as the matrix we used → a fixed point. A slot we already tried → a cycle; stop.
+          const next = depDate(r.sol.ev.dep).getTime();
+          if (next === when.getTime()) { settled = true; break; }
+          if (rounds.some(x => x.when.getTime() === next)) break;
           dep = r.sol.ev.dep;
         }
         // No fixed point (e.g. departure flips across the start of rush hour):
         // take the round that leaves earliest — the most conservative plan.
         const pick = settled ? rounds[rounds.length - 1]
           : rounds.reduce((a, r) => (a.sol.err ? r : r.sol.err ? a : r.sol.ev.dep < a.sol.ev.dep ? r : a));
-        if (!settled && !pick.sol.err) trafficNote = 'זמני התנועה משתנים מאוד סביב שעת היציאה, ולכן נבחר התכנון השמרני (יציאה מוקדמת יותר).';
+        if (!settled && !pick.sol.err) trafficNote = 'שעת היציאה לא התייצבה (התנועה משתנה סביבה), ולכן נבחר התכנון השמרני (יציאה מוקדמת יותר).';
         sol = pick.sol; Ldist = pick.dist; trafficAt = pick.when;
         src = 'google';
       } catch (err) {

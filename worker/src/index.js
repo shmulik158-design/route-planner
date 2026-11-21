@@ -1,6 +1,8 @@
 // Cloudflare Worker: holds the Google API key and returns only a travel-time matrix.
-// Request:  POST { points: [{lat, lon}, ...], departureTime: "2026-11-23T08:30:00Z" }
-// Response: { dur: [[seconds|null]], dist: [[meters|null]] }
+// Request:  POST { points: [{lat, lon}, ...], departureTime: "2026-11-23T08:30:00Z",
+//                  from?: [point indexes used as origins], to?: [point indexes used as destinations] }
+//           (from/to default to all points; Google bills |from| × |to| elements)
+// Response: { dur: [[seconds|null]], dist: [[meters|null]] } — full n×n, null for pairs not requested
 // Only coordinates pass through here — no addresses, no names — and nothing is logged.
 
 const MAX_POINTS = 12; // 10 visits + start + end
@@ -32,6 +34,14 @@ export default {
       if (!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon) || Math.abs(p.lat) > 90 || Math.abs(p.lon) > 180)
         return reply(400, { error: 'bad point' });
     }
+    const idx = (list, name) => {
+      if (list == null) return pts.map((_, i) => i);
+      if (!Array.isArray(list) || !list.length || new Set(list).size !== list.length
+          || !list.every(i => Number.isInteger(i) && i >= 0 && i < pts.length)) throw name;
+      return list;
+    };
+    let from, to;
+    try { from = idx(body.from, 'from'); to = idx(body.to, 'to'); } catch (e) { return reply(400, { error: 'bad ' + e }); }
     // Google rejects departure times in the past; clamp to "now + 1 min" and cap at 7 days ahead.
     let dep = Date.parse(body.departureTime);
     const now = Date.now();
@@ -47,23 +57,24 @@ export default {
         'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,distanceMeters,condition',
       },
       body: JSON.stringify({
-        origins: wp, destinations: wp, travelMode: 'DRIVE',
+        origins: from.map(i => wp[i]), destinations: to.map(i => wp[i]), travelMode: 'DRIVE',
         routingPreference: 'TRAFFIC_AWARE', departureTime: new Date(dep).toISOString(),
       }),
     });
     if (!g.ok) return reply(502, { error: 'google ' + g.status });
     const els = await g.json();
-    return reply(200, toMatrix(els, pts.length));
+    return reply(200, toMatrix(els, pts.length, from, to));
   },
 };
 
-// Google omits zero-valued fields (e.g. originIndex 0), hence the `?? 0`.
-export function toMatrix(els, n) {
+// Google's indexes refer to positions in the origins/destinations lists we sent;
+// map them back to point indexes. Google omits zero-valued fields (originIndex 0), hence `?? 0`.
+export function toMatrix(els, n, from = [...Array(n).keys()], to = from) {
   const dur = [...Array(n)].map(() => Array(n).fill(null));
   const dist = [...Array(n)].map(() => Array(n).fill(null));
   for (const e of els) {
-    const i = e.originIndex ?? 0, j = e.destinationIndex ?? 0;
-    if (i >= n || j >= n) continue;
+    const i = from[e.originIndex ?? 0], j = to[e.destinationIndex ?? 0];
+    if (i == null || j == null) continue;
     if (i === j) { dur[i][j] = 0; dist[i][j] = 0; continue; }
     if (e.condition !== 'ROUTE_EXISTS') continue;
     dur[i][j] = parseFloat(e.duration || '0s');
