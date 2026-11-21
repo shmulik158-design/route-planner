@@ -1,0 +1,12 @@
+name = "route-planner-matrix"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+# No request logs/observability: requests carry coordinates of visit locations.
+[observability]
+enabled = false
+
+[vars]
+ALLOWED_ORIGINS = "https://shmulik158-design.github.io,http://localhost:5173"
+
+# Secret (not in this file):  npx wrangler secret put GOOGLE_API_KEY

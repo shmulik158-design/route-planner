@@ -106,7 +106,7 @@
       <div><label>תוספת לנסיעות (%)</label><input id="bufPct" type="number" value="20" min="0"></div>
       <div><label>מרווח לפני היעד (דק׳)</label><input id="bufMin" type="number" value="10" min="0"></div>
     </div>
-    <div class="hint">זמני הנסיעה מ-OpenStreetMap לא כוללים פקקים, ולכן כדאי להשאיר תוספת אחוזים.</div>
+    <div class="hint">כשיש שרת תנועה, זמני הנסיעה כוללים תנועה צפויה ואפשר להקטין את התוספת. בלעדיו (OpenStreetMap) אין פקקים, ולכן כדאי להשאיר תוספת אחוזים.</div>
   </div>
 
   <button class="primary" id="go">חשב מסלול אופטימלי</button>
@@ -257,6 +257,27 @@ $('#pclear').onclick = () => {
 };
 document.querySelectorAll('.card > .row .pin').forEach(b => wirePin(b.parentElement.querySelector('input'), b));
 
+// ---------- Traffic matrix (Google Routes via our Worker) ----------
+// URL of the Cloudflare Worker (worker/). Empty = OSRM only, no traffic.
+let TRAFFIC_API = '';
+const TRAFFIC_ROUNDS = 3, TRAFFIC_TOL = 5; // re-plan up to 3 times until departure moves ≤ 5 min
+async function trafficMatrix(pts, when) {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const r = await fetch(TRAFFIC_API, { method: 'POST', signal: ctl.signal, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ points: pts.map(p => ({ lat: p.lat, lon: p.lon })), departureTime: when.toISOString() }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !Array.isArray(j.dur)) throw new Error(j.error || 'HTTP ' + r.status);
+    return j;
+  } finally { clearTimeout(timer); }
+}
+// Minutes-since-midnight → Date. A time already well past today means the plan is for tomorrow.
+function depDate(min) {
+  const now = new Date(), d = new Date(now); d.setHours(0, 0, 0, 0); d.setMinutes(Math.round(min));
+  if (d < now) { if (now - d <= 30 * 60e3) return new Date(now.getTime() + 60e3); d.setDate(d.getDate() + 1); }
+  return d;
+}
+
 // ---------- OSRM ----------
 const OSRM = 'https://router.project-osrm.org';
 const cstr = pts => pts.map(p => p.lon.toFixed(6) + ',' + p.lat.toFixed(6)).join(';');
@@ -377,24 +398,58 @@ $('#go').onclick = async () => {
       if (!g) return setStatus(`לא נמצאה הכתובת: "${all[i].q}". נסה עיר + רחוב + מספר, או קואורדינטות.`, true);
       Object.assign(all[i], g);
     }
-    setStatus('מחשב זמני נסיעה…');
-    const { dur: D, dist: Ldist } = await durationMatrix(all);
-    const M = D.map(r => r.map(x => Math.ceil((x ?? 1e6) / 60 * (1 + bufPct))));
     const s = startQ ? 0 : null, e = endQ ? all.length - 1 : null;
     const V = visits.map((_, i) => i + (s !== null ? 1 : 0));
-    const P = { M, V, s, e, bufMin, dur: {}, from: {}, to: {} };
-    V.forEach(v => { P.dur[v] = all[v].dur; P.from[v] = all[v].from; P.to[v] = all[v].to; });
+    // Plan for one travel-time matrix (seconds). Returns { M, P, T, best, ev } or { err }.
+    const plan = D => {
+      const M = D.map(r => r.map(x => Math.ceil((x ?? 1e6) / 60 * (1 + bufPct))));
+      const P = { M, V, s, e, bufMin, dur: {}, from: {}, to: {} };
+      V.forEach(v => { P.dur[v] = all[v].dur; P.from[v] = all[v].from; P.to[v] = all[v].to; });
+      let T = deadline;
+      if (T == null) {
+        T = earliestFinish(P, earliest ?? nowMin);
+        if (T == null) return { err: 'אין סדר ביקורים שעומד בכל חלונות הזמן. נסה להרחיב חלון או לקצר ביקור.' };
+      }
+      const best = bestForDeadline(P, T);
+      if (!best) return { err: `אין סדר ביקורים שמאפשר להגיע עד ${hhmm(T)} ולעמוד בכל חלונות הזמן. נסה להרחיב חלון, לקצר ביקורים או להוריד ביקור.` };
+      return { M, P, T, best, ev: evalOrder(P, best.order, T) };
+    };
 
-    setStatus('מחפש את הסדר הטוב ביותר…');
-    let T = deadline, note = '';
-    if (T == null) {
-      const t0 = earliest ?? nowMin;
-      T = earliestFinish(P, t0);
-      if (T == null) return setStatus('אין סדר ביקורים שעומד בכל חלונות הזמן. נסה להרחיב חלון או לקצר ביקור.', true);
+    let sol = null, Ldist = null, src = 'osrm', trafficAt = null, trafficNote = '';
+    if (TRAFFIC_API) {
+      try {
+        // Departure depends on the order and the order on travel times: iterate until departure settles.
+        let dep = deadline != null ? deadline - bufMin - visits.reduce((a, v) => a + v.dur, 0) - 15 * (visits.length + 1)
+                                   : (earliest ?? nowMin);
+        const rounds = []; let settled = false;
+        for (let round = 1; round <= TRAFFIC_ROUNDS; round++) {
+          setStatus(`מחשב זמני נסיעה עם תנועה צפויה… (סבב ${round})`);
+          const when = depDate(dep), mat = await trafficMatrix(all, when);
+          const r = { sol: plan(mat.dur), dist: mat.dist, when };
+          rounds.push(r);
+          if (r.sol.err || Math.abs(r.sol.ev.dep - dep) <= TRAFFIC_TOL) { settled = true; break; }
+          dep = r.sol.ev.dep;
+        }
+        // No fixed point (e.g. departure flips across the start of rush hour):
+        // take the round that leaves earliest — the most conservative plan.
+        const pick = settled ? rounds[rounds.length - 1]
+          : rounds.reduce((a, r) => (a.sol.err ? r : r.sol.err ? a : r.sol.ev.dep < a.sol.ev.dep ? r : a));
+        if (!settled && !pick.sol.err) trafficNote = 'זמני התנועה משתנים מאוד סביב שעת היציאה, ולכן נבחר התכנון השמרני (יציאה מוקדמת יותר).';
+        sol = pick.sol; Ldist = pick.dist; trafficAt = pick.when;
+        src = 'google';
+      } catch (err) {
+        sol = null; trafficNote = 'שרת התנועה לא זמין, החישוב נעשה ללא תנועה (OSRM).';
+      }
     }
-    const best = bestForDeadline(P, T);
-    if (!best) return setStatus(`אין סדר ביקורים שמאפשר להגיע עד ${hhmm(T)} ולעמוד בכל חלונות הזמן. נסה להרחיב חלון, לקצר ביקורים או להוריד ביקור.`, true);
-    const ev = evalOrder(P, best.order, T);
+    if (!sol) {
+      setStatus('מחשב זמני נסיעה…');
+      const mat = await durationMatrix(all);
+      setStatus('מחפש את הסדר הטוב ביותר…');
+      sol = plan(mat.dur); Ldist = mat.dist;
+    }
+    if (sol.err) return setStatus(sol.err, true);
+    const { M, P, T, best, ev } = sol;
+    let note = '';
     if (earliest != null && ev.dep < earliest) note = `שים לב: כדי לעמוד בזה צריך לצאת ב-${hhmm(ev.dep)}, מוקדם מ-${hhmm(earliest)}.`;
     const approx = all.filter(p => !p.exact).map(p => `"${p.q}"`);
     const approxNote = approx.length ? `מיקום משוער (מספר הבית לא נמצא, נלקח מרכז הרחוב): ${approx.join(', ')}. לחץ 📌 ליד הכתובת כדי לסמן אותה במפה.` : '';
@@ -438,6 +493,10 @@ $('#go').onclick = async () => {
           <div class="stat"><b>${dead} דק׳</b><span>זמן מת: נסיעה ${driveMin}${waitTot ? ' + המתנה ' + waitTot : ''}</span></div>
           <div class="stat"><b>${(distM / 1000).toFixed(1)} ק״מ</b><span>זמני נסיעה כוללים תוספת ${Math.round(bufPct * 100)}%</span></div>
         </div>
+        <div class="hint">${src === 'google'
+          ? `זמני נסיעה כוללים תנועה צפויה (Google) ליציאה ב-${trafficAt.toLocaleDateString('he-IL', { weekday: 'long' })} ${hhmm(trafficAt.getHours() * 60 + trafficAt.getMinutes())}.`
+          : 'זמני נסיעה ללא תנועה (OpenStreetMap).'}</div>
+        ${trafficNote ? `<div class="warn">${trafficNote}</div>` : ''}
         ${cmp ? `<div class="hint">${cmp}</div>` : ''}
         ${note ? `<div class="warn">${note}</div>` : ''}
         ${approxNote ? `<div class="warn">${approxNote}</div>` : ''}
