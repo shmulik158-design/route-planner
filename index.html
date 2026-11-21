@@ -259,7 +259,7 @@ document.querySelectorAll('.card > .row .pin').forEach(b => wirePin(b.parentElem
 
 // ---------- Traffic matrix (Google Routes via our Worker) ----------
 // URL of the Cloudflare Worker (worker/). Empty = OSRM only, no traffic.
-let TRAFFIC_API = '';
+let TRAFFIC_API = 'https://route-planner-matrix.shmulik158.workers.dev';
 const TRAFFIC_ROUNDS = 3, TRAFFIC_TOL = 5; // re-plan up to 3 times until departure moves ≤ 5 min
 async function trafficMatrix(pts, when) {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 20000);

@@ -1,6 +1,9 @@
 name = "route-planner-matrix"
 main = "src/index.js"
 compatibility_date = "2026-11-01"
+workers_dev = true
+# No per-version preview URLs: they would be extra public endpoints using the same key.
+preview_urls = false
 
 # No request logs/observability: requests carry coordinates of visit locations.
 [observability]
